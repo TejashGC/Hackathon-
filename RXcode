@@ -1,0 +1,49 @@
+#include <RH_ASK.h>
+#include <SPI.h> // Not used but required for RH_ASK
+#include <LiquidCrystal.h>
+
+RH_ASK rf_driver;
+
+LiquidCrystal lcd(7, 6, 5, 4, 3, 2); // LCD pins
+
+#define BUZZER_PIN 12
+#define LED_PIN 13
+
+void setup() {
+    Serial.begin(9600); // Debugging only
+    lcd.begin(16, 2);   // Initialize LCD
+    pinMode(BUZZER_PIN, OUTPUT);
+    pinMode(LED_PIN, OUTPUT);
+
+    if (!rf_driver.init()) {
+        Serial.println("RF init failed");
+    }
+
+    lcd.print("Ready to Receive");
+}
+
+void loop() {
+    // Check for received data
+    uint8_t buf[32];
+    uint8_t len = sizeof(buf);
+    if (rf_driver.recv(buf, &len)) {
+        buf[len] = 0; // Null-terminate the string
+        Serial.print("Received: ");
+        Serial.println((char*)buf);
+
+        // Display on LCD
+        lcd.clear();
+        lcd.print((char*)buf); // Display the received message
+
+        // Trigger the buzzer and LED
+        digitalWrite(BUZZER_PIN, HIGH);
+        digitalWrite(LED_PIN, HIGH);
+        delay(1000); // Keep buzzer and LED on for 1 second
+        digitalWrite(BUZZER_PIN, LOW);
+        digitalWrite(LED_PIN, LOW);
+        
+        // Optional: Add more processing here based on the received message
+    }
+
+    delay(500); // Delay for stability
+}
