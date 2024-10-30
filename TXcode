@@ -1,0 +1,155 @@
+#include <LiquidCrystal.h>
+#include <RH_ASK.h>
+#include <SPI.h>  // Required for RH_ASK
+#include <ESP8266WiFi.h>
+#include <WiFiClient.h>
+
+LiquidCrystal lcd(7, 6, 5, 4, 3, 2);  // LCD pins
+RH_ASK rf_driver;
+
+#define BUZZER_PIN 12
+#define LED_PIN 13
+#define X_PIN A0
+#define Y_PIN D3
+#define Z_PIN D2
+
+#define THRESHOLD 50   // Increased sensitivity threshold for detecting earthquake
+#define BUZZ_TIME 5000 // Buzzer/LED alert duration
+#define NUM_SAMPLES 5  // Number of samples for averaging
+
+// Pushover settings
+const char* pushoverUserKey = "u84kxhr1ux792nk6vyf9ihthu2jekf";  // Replace with your user key
+const char* pushoverApiToken = "a85hhrdi7uukzpb7xvx1q3gcoepwtr"; // Replace with your API token
+
+// WiFi settings
+const char* ssid = "Abcd";       // Replace with your WiFi SSID
+const char* password = "123456789"; // Replace with your WiFi password
+
+// Variables for calibration and triggering
+int xSample = 0, ySample = 0, zSample = 0;
+long startTime;
+bool alertTriggered = false;
+
+// Function to get smoothed readings
+int getSmoothedReading(int pin) {
+    long sum = 0;
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        sum += analogRead(pin);
+        delay(10);
+    }
+    return sum / NUM_SAMPLES;
+}
+
+// Function to send Pushover notification
+void sendPushoverNotification(const char* message) {
+    WiFiClient client;
+    if (client.connect("api.pushover.net", 80)) {
+        String url = "/1/messages.json";
+        String data = "token=" + String(pushoverApiToken) + "&user=" + String(pushoverUserKey) + "&message=" + String(message);
+        
+        client.print(String("POST ") + url + " HTTP/1.1\r\n" +
+                     "Host: api.pushover.net\r\n" +
+                     "Connection: close\r\n" +
+                     "Content-Type: application/x-www-form-urlencoded\r\n" +
+                     "Content-Length: " + data.length() + "\r\n\r\n" +
+                     data);
+    }
+}
+
+void setup() {
+    Serial.begin(9600);
+    lcd.begin(16, 2);  // Initialize LCD
+    pinMode(BUZZER_PIN, OUTPUT);
+    pinMode(LED_PIN, OUTPUT);
+
+    if (!rf_driver.init()) {
+        Serial.println("RF init failed");
+    }
+
+    // Connect to WiFi
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("Connected to WiFi");
+
+    lcd.print("Calibrating...");
+    delay(2000);
+
+    // Calibration: set baseline values by averaging multiple samples
+    for (int i = 0; i < 50; i++) {
+        xSample += getSmoothedReading(X_PIN);
+        ySample += getSmoothedReading(Y_PIN);
+        zSample += getSmoothedReading(Z_PIN);
+        delay(10);
+    }
+    xSample /= 50;
+    ySample /= 50;
+    zSample /= 50;
+
+    lcd.clear();
+    lcd.print("Calibrated");
+    delay(2000);
+    lcd.clear();
+    lcd.print(" X   Y   Z ");
+}
+
+void loop() {
+    int xValue = getSmoothedReading(X_PIN);
+    int yValue = getSmoothedReading(Y_PIN);
+    int zValue = getSmoothedReading(Z_PIN);
+
+    int xChange = xValue - xSample;
+    int yChange = yValue - ySample;
+    int zChange = zValue - zSample;
+
+    lcd.setCursor(0, 1);
+    lcd.print(xChange);
+    lcd.setCursor(5, 1);
+    lcd.print(yChange);
+    lcd.setCursor(10, 1);
+    lcd.print(zChange);
+
+    Serial.print("X Change: ");
+    Serial.print(xChange);
+    Serial.print(" | Y Change: ");
+    Serial.print(yChange);
+    Serial.print(" | Z Change: ");
+    Serial.println(zChange);
+
+    if (abs(xChange) > THRESHOLD || abs(yChange) > THRESHOLD || abs(zChange) > THRESHOLD) {
+        if (!alertTriggered) {
+            startTime = millis();
+            alertTriggered = true;
+
+            lcd.clear();
+            lcd.print("Earthquake Alert");
+            Serial.println("Earthquake Alert!");
+            digitalWrite(BUZZER_PIN, HIGH);
+            digitalWrite(LED_PIN, HIGH);
+
+            // Send x, y, z values as a message
+            char msg[32];
+            snprintf(msg, sizeof(msg), "Alert! X:%d Y:%d Z:%d", xValue, yValue, zValue);
+            rf_driver.send((uint8_t *)msg, strlen(msg));
+            rf_driver.waitPacketSent();
+            Serial.println("Message sent: ");
+            Serial.println(msg);
+            
+            // Send notification to Pushover
+            sendPushoverNotification(msg);
+        }
+    } else if (alertTriggered && (millis() - startTime > BUZZ_TIME)) {
+        alertTriggered = false;
+        digitalWrite(BUZZER_PIN, LOW);
+        digitalWrite(LED_PIN, LOW);
+        lcd.clear();
+        lcd.print("Normal");
+        Serial.println("No Alert");
+        lcd.setCursor(0, 1);
+        lcd.print(" X   Y   Z ");
+    }
+
+    delay(500);  // Small delay to avoid rapid LCD updates
+}
